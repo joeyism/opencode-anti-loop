@@ -1,0 +1,55 @@
+{
+  "name": "opencode-anti-loop",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that detects and blocks infinite agent loops by tracking file hashes and command repetition",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:cov": "vitest run --coverage"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "loop-detection",
+    "anti-loop",
+    "agent-safety"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.14.48",
+    "@types/node": "^22.0.0",
+    "@vitest/coverage-v8": "^4.1.5",
+    "typescript": "^5.8.0",
+    "vitest": "^4.1.5"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.2.0"
+  },
+  "dependencies": {
+    "@opencode-ai/sdk": "^1.14.48"
+  },
+  "author": "joeyism",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joeyism/opencode-anti-loop.git"
+  },
+  "bugs": {
+    "url": "https://github.com/joeyism/opencode-anti-loop/issues"
+  },
+  "homepage": "https://github.com/joeyism/opencode-anti-loop#readme"
+}
