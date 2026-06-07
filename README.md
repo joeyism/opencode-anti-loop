@@ -17,7 +17,21 @@ npm install opencode-anti-loop
 
 ## Usage
 
-This is a plugin for [OpenCode](https://github.com/opencode-ai). You can register it in your OpenCode configuration or agent setup:
+This is a plugin for [OpenCode](https://github.com/opencode-ai). 
+
+You can easily enable this plugin globally by adding it to your `opencode.json` (or `opencode.jsonc`) configuration file under the `plugins` array.
+
+```json
+{
+  "plugins": [
+    "opencode-anti-loop"
+  ]
+}
+```
+
+Once added to your configuration, OpenCode will automatically load and activate the plugin whenever it starts.
+
+Alternatively, if you are configuring OpenCode programmatically via the SDK, you can register it like this:
 
 ```typescript
 import { configureAgent } from '@opencode-ai/sdk';
