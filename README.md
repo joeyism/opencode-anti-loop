@@ -67,6 +67,60 @@ The plugin hooks into three points of OpenCode's tool lifecycle (`event`, `tool.
 | File investigation | Repeatedly probing the same data files | 12 per group / 24 global | Block |
 | Subagent loop | Repeated subagent spawns with similar prompts | 3 spawns + <30% novelty | Block |
 
+### Detection Details
+
+Here is a detailed breakdown of each detection mode, including examples of what gets caught and why blocking it makes sense:
+
+#### 1. Duplicate Test
+* **What gets caught**: Running `pytest tests/test_math.py` twice in a row without modifying any files in the workspace.
+* **Why it makes sense**: Running a test against unchanged code cannot produce new information. It wastes tokens and time. The agent must change the code or the test before running it again.
+
+#### 2. Command Streak
+* **What gets caught**: Running `python run.py` 3 times in a row without any file writes or edits in between.
+* **Why it makes sense**: If the agent runs the exact same command repeatedly without changing any files, the output will be identical. This is a classic "stuck" loop where the agent is waiting for a different result without taking action.
+
+#### 3. Identical Output (Per-Command)
+* **What gets caught**: Running `python run.py`, then editing a file, then running `python run.py` again, and repeating this 3 times, where the output of `python run.py` is exactly the same every time.
+* **Why it makes sense**: Even though the agent is editing files, the edits are having absolutely no effect on the command's output. The agent is stuck in a "guess and check" loop. It needs to stop guessing and write a diagnostic script or print variables to understand why its changes are inert.
+
+#### 4. Identical Output (Global)
+* **What gets caught**: Running `python test1.py`, then `python test2.py`, then `python test3.py`, where all of them output `Error: database connection failed`.
+* **Why it makes sense**: The agent is writing different scripts to test the same underlying issue. It already knows the database connection is failing; writing more diagnostic scripts won't fix it. It needs to stop diagnosing and write a fix.
+
+#### 5. Timeout Loop
+* **What gets caught**: Running `gcc main.c && ./a.out` twice, and both times the command times out (takes >120s or is terminated).
+* **Why it makes sense**: The code likely has an infinite loop or a severe performance bug. Running it again blindly will just time out again, wasting tokens and killing the agent. The agent must add debug prints or reduce the scope of the run to find the hang.
+
+#### 6. Action Cycle (Exact)
+* **What gets caught**: Repeating the sequence `[edit file.c, gcc file.c]` 6 times in a row, where the file content and compiler output are identical in each cycle.
+* **Why it makes sense**: The agent is stuck in a local maximum, repeating the exact same sequence of actions. It needs to pivot its strategy and try a fundamentally different approach.
+
+#### 7. Action Cycle (Semantic)
+* **What gets caught**: Repeating the sequence `[write check_weights1.py, python check_weights1.py]` then `[write check_weights2.py, python check_weights2.py]` with the same description "Check weights layout" 8 times.
+* **Why it makes sense**: Even though the script names are different, the conceptual investigation is identical. The agent is looping strategically. It needs to commit to the facts it has learned and move forward with implementation.
+
+#### 8. Zombie Loop
+* **What gets caught**: The agent completes 3 consecutive steps where its reasoning token count is 0 (it just calls tools without any internal thought/reasoning).
+* **Why it makes sense**: The agent is acting on autopilot without thinking. This often happens when it gets confused or stuck in a tool-execution loop. Forcing a block forces the agent to stop and reason.
+
+#### 9. Hard Loop
+* **What gets caught**: Running 3 consecutive bash commands that all fail (exit code != 0 or error output).
+* **Why it makes sense**: The agent is blindly retrying failing commands or guessing syntax. It needs to stop, read the error message, and use a systematic debugging approach instead of guessing.
+
+#### 10. Exploration Sprawl
+* **What gets caught**: Running 9 read-only commands (like `cat`, `grep`, `ls`) before writing any code, or running 21 read-only commands after the first write.
+* **Why it makes sense**: The agent is stuck in "analysis paralysis" or exploration sprawl — reading endless files and running diagnostics without actually producing any deliverables. It needs to stop reading and start writing.
+
+#### 11. File Investigation
+* **What gets caught**: Writing 13 different scripts that all read and print parts of `gpt2-124M.ckpt`.
+* **Why it makes sense**: The agent is repeatedly probing the same data file without making progress. It needs to commit to the facts it has already learned from the file and move on to writing the solution.
+
+#### 12. Subagent Loop
+* **What gets caught**: Spawning a `fixer` subagent 4 times with the prompt "Write GPT-2 in C" where the prompt novelty is very low.
+* **Why it makes sense**: The agent is repeatedly delegating the same task to subagents and failing. It needs to stop spawning subagents, write a new plan, and test a miniaturized version of the architecture itself.
+
+### Normalization & Progress Tracking
+
 Commands are normalized before tracking — incrementing filenames (`file1.c` → `file.c`), heredoc bodies, and cosmetic variations collapse to one key, so the agent can't evade detection by renaming things. Output is similarly normalized (line numbers, timestamps, memory addresses stripped) before hashing. Genuine progress is not penalized: different content hashes or output hashes break cycles.
 
 ### Escalation Behavior
