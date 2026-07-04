@@ -46,6 +46,25 @@ To pass configuration options, use the tuple form:
 }
 ```
 
+## Table of Contents
+
+- [Why Use It](#why-use-it)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [How It Works](#how-it-works)
+  - [Detection Modes](#detection-modes)
+  - [Detection Details](#detection-details)
+  - [Escalation Behavior](#escalation-behavior)
+  - [Behavioral Side Effects](#behavioral-side-effects)
+- [Tool Coverage](#tool-coverage)
+- [Setup Command Exemptions](#setup-command-exemptions)
+- [Configuration](#configuration)
+  - [Options](#options)
+  - [Examples](#examples)
+- [Limitations](#limitations)
+- [Programmatic Usage](#programmatic-usage)
+- [License](#license)
+
 ## How It Works
 
 The plugin hooks into three points of OpenCode's tool lifecycle (`event`, `tool.execute.before`, `tool.execute.after`) and runs ~10 independent detectors in parallel. Each targets a specific loop pathology.
