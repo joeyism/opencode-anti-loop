@@ -220,8 +220,31 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
     event: async (input: any) => {
       const event = input?.event;
       if (event?.type !== "message.part.updated") return;
-      const part = event.part;
+      const part = event.part ?? event.properties?.part;
       if (part?.type !== "step-finish") return;
+
+      const TRUNCATION_THRESHOLD = 16000;
+      const outputTokens = typeof part?.tokens?.output === "number" ? part.tokens.output : 0;
+      const finishReason = part?.reason;
+      const sessionID = event.sessionID ?? part?.sessionID;
+
+      if (finishReason === "length" || outputTokens > TRUNCATION_THRESHOLD) {
+        try {
+          await (ctx.client as any).session.prompt({
+            path: { id: sessionID },
+            body: {
+              parts: [{
+                type: "text",
+                text: `⚠️ OUTPUT TRUNCATION DETECTED: Your previous response produced ${outputTokens} tokens and was cut off. ` +
+                      `You MUST make a tool call (write, bash, or edit) in your next response. ` +
+                      `Limit reasoning to 3-5 lines. Act immediately.`,
+              }],
+            },
+          });
+        } catch (e) {
+          // Log but don't fail — the step is already done
+        }
+      }
 
       const reasoning = part?.tokens?.reasoning;
       if (typeof reasoning !== "number") return;
@@ -247,6 +270,8 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
       const { tool } = input;
       if (tool === "skill") return;
       const args = output.args;
+      const phase = (process.env.AGENT_PHASE || "").toLowerCase();
+      const isVerifyPhase = phase.startsWith("verify");
 
       // Increment sprawl counter on every non-skill tool call.
       // This is the primary increment — the event hook increment is a backup
@@ -281,7 +306,7 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
 
         if (intent === "investigate" && fileTargets.length > 0) {
           const investigatedFiles = fileTargets.filter(f => !state.agentWrittenFiles.has(f));
-          if (investigatedFiles.length > 0) {
+          if (investigatedFiles.length > 0 && !isVerifyPhase) {
             const rawFileTargetKey = investigatedFiles.join(",");
             
             if (checkGlobalFileInvestigation(state, rawFileTargetKey)) {
@@ -324,7 +349,7 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
           state.stepsSinceLastWrite = Math.max(0, state.stepsSinceLastWrite - 1);
         } else {
           const limit = state.hasProducedFirstWrite ? state.options.maxStepsWithoutWrite : state.options.maxStepsWithoutFirstWrite;
-          if (state.stepsSinceLastWrite > limit) {
+          if (state.stepsSinceLastWrite > limit && !isVerifyPhase) {
             await throwAfterCompact(buildExplorationSprawlError(state.stepsSinceLastWrite, limit), input.sessionID);
           }
         }

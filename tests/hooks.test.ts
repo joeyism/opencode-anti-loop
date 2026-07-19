@@ -1,8 +1,19 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createHooks } from "../src/hooks.js";
 import { createState } from "../src/state.js";
 import { DEFAULT_OPTIONS } from "../src/config.js";
 import * as commandModule from "../src/command.js";
+
+// Allow mocking of specific exports while keeping the rest original
+vi.mock("../src/command.js", async () => {
+  const actual: any = await vi.importActual("../src/command.js");
+  return {
+    ...actual,
+    // We will override these in specific tests using vi.mocked
+    extractTestTargets: vi.fn(actual.extractTestTargets),
+    isTestCommand: vi.fn(actual.isTestCommand),
+  };
+});
 
 describe("hooks.ts", () => {
   let state: any;
@@ -689,6 +700,101 @@ python check_llmc_layout.py`;
           hooks["tool.execute.before"](input, { args: { command: cmd } })
         ).rejects.toThrow("TIMEOUT LOOP DETECTED");
       });
+    });
+  });
+
+  describe("phase awareness", () => {
+    afterEach(() => {
+      delete process.env.AGENT_PHASE;
+    });
+
+    it("skips exploration sprawl during verify phase", async () => {
+      process.env.AGENT_PHASE = "verify_1";
+      state.options.maxStepsWithoutFirstWrite = 1;
+
+      await runToolBefore("bash", { command: "ls -la", description: "list" });
+      // Should normally trigger sprawl on 2nd call
+      await expect(
+        runToolBefore("bash", { command: "pwd", description: "path" })
+      ).resolves.not.toThrow();
+    });
+
+    it("skips file-target investigation during verify phase", async () => {
+      process.env.AGENT_PHASE = "verify_1";
+      state.options.maxSameFileInvestigations = 1;
+
+      await runToolBefore("bash", { command: "cat test.txt", description: "read" });
+      // Should normally trigger investigation loop on 2nd call
+      await expect(
+        runToolBefore("bash", { command: "grep foo test.txt", description: "search" })
+      ).resolves.not.toThrow();
+    });
+  });
+
+  describe("truncation detection", () => {
+    it("prompts when step-finish reason is length", async () => {
+      ctx.client.session.prompt = vi.fn().mockResolvedValue(undefined);
+      
+      await hooks.event({
+        event: {
+          type: "message.part.updated",
+          sessionID: "s1",
+          part: {
+            type: "step-finish",
+            reason: "length",
+            tokens: { output: 32000 }
+          }
+        }
+      });
+      
+      expect(ctx.client.session.prompt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          path: { id: "s1" },
+          body: expect.objectContaining({
+            parts: expect.arrayContaining([
+              expect.objectContaining({
+                text: expect.stringContaining("TRUNCATION DETECTED")
+              })
+            ])
+          })
+        })
+      );
+    });
+
+    it("prompts when output tokens exceed threshold even without reason:length", async () => {
+      ctx.client.session.prompt = vi.fn().mockResolvedValue(undefined);
+      
+      await hooks.event({
+        event: {
+          type: "message.part.updated",
+          sessionID: "s1",
+          part: {
+            type: "step-finish",
+            reason: "stop",
+            tokens: { output: 20000 }
+          }
+        }
+      });
+      
+      expect(ctx.client.session.prompt).toHaveBeenCalled();
+    });
+
+    it("does not prompt on normal step-finish", async () => {
+      ctx.client.session.prompt = vi.fn().mockResolvedValue(undefined);
+      
+      await hooks.event({
+        event: {
+          type: "message.part.updated",
+          sessionID: "s1",
+          part: {
+            type: "step-finish",
+            reason: "tool-calls",
+            tokens: { output: 500 }
+          }
+        }
+      });
+      
+      expect(ctx.client.session.prompt).not.toHaveBeenCalled();
     });
   });
 });

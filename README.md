@@ -1,6 +1,6 @@
 # OpenCode Anti-Loop Plugin
 
-Detects and blocks infinite agent loops — duplicate tests, repeated commands, identical outputs, exploration sprawl, zombie steps, and more — through layered detection with configurable escalation.
+Detects and blocks infinite agent loops — duplicate tests, repeated commands, identical outputs, exploration sprawl, zombie steps, truncation, and more — through layered detection with configurable escalation.
 
 ## Why Use It
 
@@ -14,6 +14,7 @@ This plugin intercepts the agent's tool lifecycle and blocks loops before they s
 - **Exploration sprawl** — many steps without producing any output
 - **Zombie loops** — steps with zero reasoning tokens
 - **Timeout loops** — commands that keep timing out
+- **Output truncation** — steps that hit the model's output token limit without emitting a tool call
 
 When a loop is detected, the plugin blocks the action with a descriptive error guiding the agent to change approach. If the agent keeps getting blocked, the plugin escalates to session compaction and (optionally) rollback.
 
@@ -54,6 +55,7 @@ To pass configuration options, use the tuple form:
 - [How It Works](#how-it-works)
   - [Detection Modes](#detection-modes)
   - [Detection Details](#detection-details)
+  - [Phase Awareness](#phase-awareness)
   - [Escalation Behavior](#escalation-behavior)
   - [Behavioral Side Effects](#behavioral-side-effects)
 - [Tool Coverage](#tool-coverage)
@@ -67,7 +69,7 @@ To pass configuration options, use the tuple form:
 
 ## How It Works
 
-The plugin hooks into three points of OpenCode's tool lifecycle (`event`, `tool.execute.before`, `tool.execute.after`) and runs ~10 independent detectors in parallel. Each targets a specific loop pathology.
+The plugin hooks into three points of OpenCode's tool lifecycle (`event`, `tool.execute.before`, `tool.execute.after`) and runs ~11 independent detectors in parallel. Each targets a specific loop pathology.
 
 ### Detection Modes
 
@@ -85,6 +87,7 @@ The plugin hooks into three points of OpenCode's tool lifecycle (`event`, `tool.
 | Exploration sprawl | Steps without writing code | 8 (pre-first-write) / 20 (after) | Block |
 | File investigation | Repeatedly probing the same data files | 12 per group / 24 global | Block |
 | Subagent loop | Repeated subagent spawns with similar prompts | 3 spawns + <30% novelty | Block |
+| Output truncation | Step ends with `reason: "length"` or output > 16K tokens | — | Inject "act now" prompt |
 
 ### Detection Details
 
@@ -138,9 +141,33 @@ Here is a detailed breakdown of each detection mode, including examples of what 
 * **What gets caught**: Spawning a `fixer` subagent 4 times with the prompt "Write GPT-2 in C" where the prompt novelty is very low.
 * **Why it makes sense**: The agent is repeatedly delegating the same task to subagents and failing. It needs to stop spawning subagents, write a new plan, and test a miniaturized version of the architecture itself.
 
+#### 13. Output Truncation
+* **What gets caught**: A step finishes with `reason: "length"` (the model hit its output token limit) or produced more than 16,000 output tokens.
+* **Why it makes sense**: When a model over-thinks a problem, it can spend its entire output budget on reasoning without ever emitting a tool call. The step ends with `reason: "length"` and no file was written, no command was run — the agent produced nothing. The plugin detects this and injects a prompt telling the agent to make a tool call immediately, limiting reasoning to 3-5 lines.
+* **How it works**: On every `step-finish` event, the plugin checks `part.reason` and `part.tokens.output`. If `reason === "length"` or `output > 16000`, it calls `ctx.client.session.prompt()` to inject a message: *"⚠️ OUTPUT TRUNCATION DETECTED: Your previous response produced N tokens and was cut off. You MUST make a tool call (write, bash, or edit) in your next response. Limit reasoning to 3-5 lines. Act immediately."*
+* **Note**: This detector fires even when `tokens.reasoning` is absent (as is the case with models like GLM-5.2 that don't separate reasoning tokens). The zombie-loop detector alone would miss this case because it requires `typeof reasoning === "number"`.
+
 ### Normalization & Progress Tracking
 
 Commands are normalized before tracking — incrementing filenames (`file1.c` → `file.c`), heredoc bodies, and cosmetic variations collapse to one key, so the agent can't evade detection by renaming things. Output is similarly normalized (line numbers, timestamps, memory addresses stripped) before hashing. Genuine progress is not penalized: different content hashes or output hashes break cycles.
+
+### Phase Awareness
+
+The plugin reads the `AGENT_PHASE` environment variable to adjust its behavior during different phases of an agent pipeline (e.g., FrankCode's main → verify → fix cycle).
+
+| Phase prefix | What's skipped | What still runs |
+|---|---|---|
+| `verify_*` | Exploration sprawl, file-target investigation, global file investigation | Duplicate test, command streak, timeout loop, hard loop, action cycle, subagent loop, truncation detection |
+| `fix_*` | (no exemptions — same as main) | All detectors active |
+| `main` or unset | (no exemptions) | All detectors active |
+
+**Why**: During verification phases, the agent's primary job is to read deliverables and test output — activities that would normally trigger exploration sprawl or file-investigation detectors. These detectors produce false positives during verification, blocking the agent from doing its job. The phase awareness feature ensures that only genuinely harmful loops (duplicate tests, repeated commands, etc.) are blocked during verification.
+
+**How to set the phase**: The orchestrator (e.g., FrankCode) sets `AGENT_PHASE` in the environment before launching each opencode session. The value is typically `main`, `verify_1`, `verify_2`, `fix_1`, `fix_2`, etc.
+
+```bash
+AGENT_PHASE=verify_1 opencode run "verify the deliverables..."
+```
 
 ### Escalation Behavior
 
@@ -164,6 +191,7 @@ Besides blocking, the plugin modifies tool outputs and subagent prompts:
 | Advisory notes | Approaching cycle limits | Appends a note to tool output |
 | Session compaction | 5+ consecutive blocks | Calls `session.summarize` |
 | System override injection | 5+ consecutive blocks | Injects a `session.prompt` demanding the agent write code |
+| Truncation prompt injection | Step ends with `reason: "length"` or output > 16K | Injects a `session.prompt` telling the agent to make a tool call immediately |
 
 > ⚠️ **Subagent prompt injection cannot be disabled.** Every subagent spawned via the `task` tool gets an `<EXTREMELY_IMPORTANT>` instruction prepended, mandating use of the `skill` tool and TDD. If you don't use the "superpowers" skill system, this injection will still appear in your subagent prompts.
 
@@ -177,6 +205,7 @@ Besides blocking, the plugin modifies tool outputs and subagent prompts:
 | `read` | Partial | Tracked in action history for cycle detection; increments sprawl counter |
 | `task` | Yes | Subagent frequency tracking, prompt novelty computation, prompt injection |
 | `skill` | No | Explicitly exempt |
+| `event` (step-finish) | Yes | Zombie loop detection, output truncation detection |
 
 ## Setup Command Exemptions
 
@@ -211,6 +240,8 @@ The following commands are classified as "setup" intent and exempt from command 
 | `allowRollback` | `boolean` | `false` | Enable session rollback on persistent loops (see Escalation Behavior) |
 
 > Defaults are defined in `src/config.ts`. If you change them in code, update this table to match.
+
+> **Truncation threshold** is hardcoded at 16,000 output tokens in `src/hooks.ts`. It is not configurable via plugin options. To change it, modify the `TRUNCATION_THRESHOLD` constant.
 
 ### Examples
 
@@ -263,6 +294,8 @@ The following commands are classified as "setup" intent and exempt from command 
 - **No logging or telemetry.** The plugin is silent during normal operation. You'll only see output when a detector triggers or an advisory note is appended.
 - **Rollback reverts session state, not the filesystem.** Files written by the agent may still exist on disk after rollback.
 - **Subagent prompt injection cannot be disabled.** Every `task` call gets an `<EXTREMELY_IMPORTANT>` instruction prepended.
+- **Truncation threshold is not configurable.** The 16K-token threshold is hardcoded. To change it, modify `src/hooks.ts`.
+- **Phase awareness requires `AGENT_PHASE` env var.** Without it, all detectors run at full strength regardless of phase.
 
 ## Programmatic Usage
 
