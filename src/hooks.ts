@@ -44,8 +44,8 @@ import {
   buildConsecutiveIdenticalOutputError
 } from "./errors.js";
 
-const pendingWrites = new WeakMap<object, PendingWrite>();
-const pendingBash = new WeakMap<object, PendingBash>();
+const pendingWrites = new Map<string, PendingWrite>();
+const pendingBash = new Map<string, PendingBash>();
 
 function isTimeoutResult(output: any): boolean {
   const metadata = output?.metadata ?? {};
@@ -369,9 +369,9 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
             const violation = checkAndRecordTestRun(state, target.pathKey, target.hash, args.command);
             if (violation) handleManualThrow(buildDuplicateTestError(violation.target, violation.hash, violation.runs, violation.max));
           }
-          pendingBash.set(input, { normalizedCommand: normalized, mutationEpoch: state.mutationEpoch, testTargets: targets, isWriteMutation });
+          pendingBash.set(input.callID, { normalizedCommand: normalized, mutationEpoch: state.mutationEpoch, testTargets: targets, isWriteMutation });
         } else {
-          pendingBash.set(input, { normalizedCommand: normalized, mutationEpoch: state.mutationEpoch, testTargets: [], isWriteMutation });
+          pendingBash.set(input.callID, { normalizedCommand: normalized, mutationEpoch: state.mutationEpoch, testTargets: [], isWriteMutation });
         }
       } else if (tool === "write" || tool === "edit") {
         resetStepsSinceLastWrite(state);
@@ -379,7 +379,7 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
         const content = args.content || args.new_string || args.newString; 
         if (filePath) state.agentWrittenFiles.add(filePath);
         if (filePath && content && state.options.matchesTrackedFile(filePath)) {
-          pendingWrites.set(input, { pathKey: filePath, nextHash: hashContent(content) });
+          pendingWrites.set(input.callID, { pathKey: filePath, nextHash: hashContent(content) });
         }
       } else if (tool === "task") {
         const subagentType = args.subagent_type || "";
@@ -435,10 +435,10 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
             } else if (cycle.severity === 'advisory') {
               const advisory = buildActionCycleAdvisory(cycle.cycleLength, cycle.count, cycle.pattern, cycle.semantic);
               if (tool === "bash") {
-                const pending = pendingBash.get(input);
+                const pending = pendingBash.get(input.callID);
                 if (pending) pending.advisory = advisory;
               } else if (tool === "write" || tool === "edit") {
-                const pending = pendingWrites.get(input);
+                const pending = pendingWrites.get(input.callID);
                 if (pending) pending.advisory = advisory;
               }
             }
@@ -455,7 +455,7 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
       }
 
       if (tool === "write" || tool === "edit") {
-        const pending = pendingWrites.get(input);
+        const pending = pendingWrites.get(input.callID);
         if (pending && didSucceed) {
           recordFileHash(state, pending.pathKey, pending.nextHash, "write");
           state.hasProducedFirstWrite = true;
@@ -469,19 +469,19 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
           outputHash: hashContent(normalizeOutputForHashing(getOutputText(output) || (output?.ok !== false ? "success" : "failure"))),
           isTimeout: isTimeoutResult(output),
         });
-        pendingWrites.delete(input);
+        pendingWrites.delete(input.callID);
         return;
       }
 
       if (tool === "bash") {
-        const pending = pendingBash.get(input);
+        const pending = pendingBash.get(input.callID);
         const didSucceedBash = !output.error && output.ok !== false;
         const isTimeout = isTimeoutResult(output);
         if (didSucceedBash) {
           resetHardLoopStreak(state);
         } else {
           if (state.hardLoopStreak >= state.options.maxHardLoops - 1) {
-            pendingBash.delete(input);
+            pendingBash.delete(input.callID);
             await compactSession(input.sessionID);
             return;
           }
@@ -511,7 +511,7 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
           if (didSucceedBash && outputHash) {
             const outputStreak = trackOutputHash(state, outputHash);
             if (outputStreak >= state.options.maxConsecutiveIdenticalOutputs) {
-              pendingBash.delete(input);
+              pendingBash.delete(input.callID);
               await throwAfterCompact(
                 buildConsecutiveIdenticalOutputError(outputStreak, state.options.maxConsecutiveIdenticalOutputs),
                 input.sessionID
@@ -524,7 +524,7 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
             }
           }
         }
-        pendingBash.delete(input);
+        pendingBash.delete(input.callID);
       }
     },
   };

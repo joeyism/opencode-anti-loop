@@ -33,8 +33,10 @@ describe("hooks.ts", () => {
     hooks = createHooks(ctx, state);
   });
 
+  let callCounter = 0;
   const runToolBefore = async (tool: string, args: Record<string, any>, sessionID = "test-session") => {
-    return hooks["tool.execute.before"]({ tool, sessionID, callID: "call-1" }, { args });
+    callCounter += 1;
+    return hooks["tool.execute.before"]({ tool, sessionID, callID: `call-${callCounter}` }, { args });
   };
 
   describe("write and edit tools", () => {
@@ -65,6 +67,76 @@ describe("hooks.ts", () => {
        await hooks["tool.execute.before"](input, { args: {} });
        await hooks["tool.execute.after"](input, { ok: true });
        expect(state.mutationEpoch).toBe(0);
+    });
+  });
+
+  describe("input object identity (SDK contract)", () => {
+    /**
+     * The OpenCode SDK passes DIFFERENT object literals to tool.execute.before
+     * and tool.execute.after (per @opencode-ai/plugin type signatures, the after
+     * input has an extra `args` field). The plugin's pendingWrites and
+     * pendingBash MUST be keyed on something stable across both invocations —
+     * callID — not on object reference, or the after-hook's lookups silently
+     * miss and the after-hook logic (file hash recording, mutation epoch,
+     * command streaks, output hashes) becomes dead code.
+     *
+     * Regression: see test-job2/opencode-terminal-bench/write-compressor__BXc93de
+     * where the plugin reported "limit: 8" (maxStepsWithoutFirstWrite) instead
+     * of "limit: 20" (maxStepsWithoutWrite) because state.hasProducedFirstWrite
+     * was never set to true after a successful write.
+     */
+
+    it("registers hasProducedFirstWrite when before and after get different object literals with same callID", async () => {
+      const callID = "call_abc";
+      // Simulate the real SDK contract: before and after hooks receive
+      // DIFFERENT object literals. Same callID, same sessionID, but distinct
+      // object identity (the after input additionally has an `args` field).
+      await hooks["tool.execute.before"](
+        { tool: "write", sessionID: "s1", callID },
+        { args: { filePath: "/tmp/work/comp.c", content: "int main(){}" } }
+      );
+      await hooks["tool.execute.after"](
+        { tool: "write", sessionID: "s1", callID, args: { filePath: "/tmp/work/comp.c" } },
+        { output: "Wrote file successfully.", ok: true }
+      );
+
+      expect(state.hasProducedFirstWrite).toBe(true);
+      expect(state.mutationEpoch).toBe(1);
+      expect(state.fileHashes.has("/tmp/work/comp.c")).toBe(true);
+    });
+
+    it("updates commandFrequencies and recentOutputHashes when bash before/after get different object literals with same callID", async () => {
+      const callID = "call_bash_1";
+      await hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "s1", callID },
+        { args: { command: "echo hello", description: "test" } }
+      );
+      await hooks["tool.execute.after"](
+        { tool: "bash", sessionID: "s1", callID, args: {} },
+        { output: "hello\n", ok: true }
+      );
+
+      expect(state.commandFrequencies.size).toBeGreaterThan(0);
+      expect(state.recentOutputHashes.length).toBe(1);
+    });
+
+    it("increments mutationEpoch on successful heredoc write through bash with different before/after inputs", async () => {
+      const callID = "call_bash_2";
+      // Use 'solution.py' as the target — classifyBashIntent (src/command.ts:180)
+      // treats heredocs targeting files matching solution|main|final|output.txt etc.
+      // as 'write' intent, which is required to set isWriteMutation in pending state.
+      const heredocCmd = `cat << 'EOF' > /tmp/solution.py\nprint(1)\nEOF`;
+      await hooks["tool.execute.before"](
+        { tool: "bash", sessionID: "s1", callID },
+        { args: { command: heredocCmd, description: "write solution" } }
+      );
+      await hooks["tool.execute.after"](
+        { tool: "bash", sessionID: "s1", callID, args: {} },
+        { output: "", ok: true }
+      );
+
+      expect(state.mutationEpoch).toBe(1);
+      expect(state.hasProducedFirstWrite).toBe(true);
     });
   });
 
@@ -164,25 +236,36 @@ describe("hooks.ts", () => {
 
       // 2. Identical content in a cycle SHOULD trigger
       state.actionHistory = []; // Reset history to focus on the cycle
-      const cmdA = "cat << 'EOF' > test.py\nprint('A')\nEOF";
-      const cmdB = "cat << 'EOF' > test.py\nprint('B')\nEOF";
+      // cmdA and cmdB have IDENTICAL script bodies AND identical outputs —
+      // they only differ in the closing comment for readability. This is
+      // the "true cycle" case the test wants to verify: same content, same
+      // output, same semantic group → cycle must be detected.
+      //
+      // (Pre-fix, this test was passing because outputHash was undefined
+      // for all records (the WeakMap bug meant the after-hook's
+      // pendingBash.get(input) returned undefined, so updateLatestActionRecord
+      // never ran). With the fix, outputHash is populated, so different
+      // outputs DO break the cycle — which is the correct behavior. This
+      // test now uses identical outputs to keep the original intent.)
+      const cmdA = "cat << 'EOF' > test.py\nprint('hello')\n# step A\nEOF";
+      const cmdB = "cat << 'EOF' > test.py\nprint('hello')\n# step B\nEOF";
       const cycleDesc = "Cycle test";
 
       // Step 1: A, B
       await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, { args: { command: cmdA, description: cycleDesc } });
-      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "a1", ok: true });
+      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "same", ok: true });
       await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, { args: { command: cmdB, description: cycleDesc } });
-      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "b1", ok: true });
+      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "same", ok: true });
 
       // Step 2: A, B
       await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, { args: { command: cmdA, description: cycleDesc } });
-      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "a2", ok: true });
+      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "same", ok: true });
       await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, { args: { command: cmdB, description: cycleDesc } });
-      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "b2", ok: true });
+      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "same", ok: true });
 
       // Step 3: A, B (B should trigger)
       await hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, { args: { command: cmdA, description: cycleDesc } });
-      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "a3", ok: true });
+      await hooks["tool.execute.after"]({ tool: "bash", sessionID: "s1" }, { output: "same", ok: true });
 
       await expect(
         hooks["tool.execute.before"]({ tool: "bash", sessionID: "s1" }, { args: { command: cmdB, description: cycleDesc } })
