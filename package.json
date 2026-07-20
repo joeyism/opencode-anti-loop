@@ -1,6 +1,6 @@
 {
   "name": "opencode-anti-loop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "OpenCode plugin that detects and blocks infinite agent loops by tracking file hashes and command repetition",
   "type": "module",
   "main": "dist/index.js",
