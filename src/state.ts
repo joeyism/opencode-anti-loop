@@ -12,8 +12,6 @@ export function createState(options: ResolvedOptions): PluginState {
     mutationEpoch: 0,
     knownTrackedFiles: new Set(),
     actionHistory: [],
-    zombieStepStreak: 0,
-    lastZombieReasoning: null,
     hardLoopStreak: 0,
     stepsSinceLastWrite: 0,
     consecutiveBlockedCalls: 0,
@@ -28,12 +26,6 @@ export function createState(options: ResolvedOptions): PluginState {
 
 export function recordAgentWrite(state: PluginState, filePath: string): void {
   state.agentWrittenFiles.add(filePath);
-}
-
-export function recordZombieStep(state: PluginState, reasoning: number): number {
-  state.lastZombieReasoning = reasoning;
-  state.zombieStepStreak = reasoning === 0 ? state.zombieStepStreak + 1 : 0;
-  return state.zombieStepStreak;
 }
 
 export function resetHardLoopStreak(state: PluginState): void {

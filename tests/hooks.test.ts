@@ -879,5 +879,30 @@ python check_llmc_layout.py`;
       
       expect(ctx.client.session.prompt).not.toHaveBeenCalled();
     });
+
+    it("does not throw ZOMBIE LOOP when reasoning tokens are 0", async () => {
+      ctx.client.session.prompt = vi.fn().mockResolvedValue(undefined);
+      ctx.client.session.summarize = vi.fn().mockResolvedValue(undefined);
+
+      // Send 5 step-finish events with reasoning: 0 — previously this would
+      // trigger ZOMBIE LOOP DETECTED after 3 consecutive steps.
+      for (let i = 0; i < 5; i++) {
+        await hooks.event({
+          event: {
+            type: "message.part.updated",
+            sessionID: "s1",
+            part: {
+              type: "step-finish",
+              reason: "tool-calls",
+              tokens: { output: 100, reasoning: 0 }
+            }
+          }
+        });
+      }
+
+      // No ZOMBIE LOOP should have been thrown.
+      // summarize (compactSession) should NOT have been called.
+      expect(ctx.client.session.summarize).not.toHaveBeenCalled();
+    });
   });
 });

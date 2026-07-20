@@ -4,7 +4,6 @@ export interface ResolvedOptions {
   maxConsecutiveIdenticalOutputs: number;
   maxCyclicalActionRepeats: number;
   maxSemanticCycleRepeats: number;
-  maxZombieSteps: number;
   maxHardLoops: number;
   maxSameFileInvestigations: number;
   maxStepsWithoutWrite: number;
@@ -21,7 +20,6 @@ export interface AntiLoopOptions {
   maxConsecutiveIdenticalOutputs?: number;
   maxCyclicalActionRepeats?: number;
   maxSemanticCycleRepeats?: number;
-  maxZombieSteps?: number;
   maxHardLoops?: number;
   maxSameFileInvestigations?: number;
   maxStepsWithoutWrite?: number;
@@ -65,8 +63,6 @@ export interface PluginState {
   mutationEpoch: number;
   knownTrackedFiles: Set<string>;
   actionHistory: ActionRecord[];
-  zombieStepStreak: number;
-  lastZombieReasoning: number | null;
   hardLoopStreak: number;
   stepsSinceLastWrite: number;
   consecutiveBlockedCalls: number;

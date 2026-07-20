@@ -9,7 +9,6 @@ import {
   updateCommandStreakAfter,
   recordAction,
   detectActionCycle,
-  recordZombieStep,
   recordHardLoopViolation,
   resetHardLoopStreak,
   checkFileTargetInvestigation,
@@ -244,14 +243,6 @@ export function createHooks(ctx: PluginContext, state: PluginState) {
         } catch (e) {
           // Log but don't fail — the step is already done
         }
-      }
-
-      const reasoning = part?.tokens?.reasoning;
-      if (typeof reasoning !== "number") return;
-
-      const streak = recordZombieStep(state, reasoning);
-      if (streak >= state.options.maxZombieSteps) {
-        await throwAfterCompact("ZOMBIE LOOP DETECTED", event.sessionID);
       }
 
       if (state.options.allowRollback && part?.messageID && part?.sessionID) {
